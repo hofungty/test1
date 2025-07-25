@@ -4,7 +4,11 @@ import requests
 from sentence_transformers import SentenceTransformer, util
 import os # 파일 존재 여부 확인을 위해 추가
 import json # Firebase config 파싱을 위해 추가
+import firebase_admin
+from firebase_admin import credentials
 
+cred = credentials.Certificate("path/to/serviceAccountKey.json")
+firebase_admin.initialize_app(cred)
 # Firebase 관련 import
 # Firebase Admin SDK를 사용합니다. Streamlit Cloud 배포 시에는 클라이언트 SDK 사용을 고려해야 합니다.
 # 이 코드는 Canvas 환경에 맞춰 설계되었습니다.
