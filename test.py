@@ -52,21 +52,32 @@ model = load_sbert_model()
 
 # --- Firebase 초기화 및 인증 ---
 if FIREBASE_AVAILABLE:
-    # Canvas 환경에서 제공되는 전역 변수 사용
-    # __app_id, __firebase_config, __initial_auth_token 변수는 Canvas 런타임에서 주입됩니다.
+    # Canvas 환경에서 제공되는 전역 변수 사용 (로컬에서는 None/빈 값)
     app_id = globals().get('__app_id', 'default-app-id')
-    firebase_config_str = globals().get('__firebase_config', '{}')
+    canvas_firebase_config_str = globals().get('__firebase_config', '{}')
     initial_auth_token = globals().get('__initial_auth_token', None)
 
     firebase_config = {}
-    try:
-        if firebase_config_str:
-            firebase_config = json.loads(firebase_config_str)
-    except json.JSONDecodeError:
-        st.error("Firebase 설정 JSON 파싱 오류.")
-
-    # 로컬 테스트를 위한 Firebase 서비스 계정 키 로드 (Canvas 환경에서는 __firebase_config 사용)
-    # firebase_config가 비어있고, 로컬에 서비스 계정 파일이 있다면 로드 시도
+    
+    # 1. Canvas 환경 변수에서 Firebase 설정 로드 시도
+    if canvas_firebase_config_str and canvas_firebase_config_str != '{}':
+        try:
+            firebase_config = json.loads(canvas_firebase_config_str)
+            st.info("Canvas 환경 변수에서 Firebase 설정을 로드했습니다.")
+        except json.JSONDecodeError:
+            st.error("Canvas Firebase 설정 JSON 파싱 오류.")
+            firebase_config = {} # 파싱 실패 시 빈 상태로 유지
+    
+    # 2. Canvas 변수가 없거나 실패한 경우, Streamlit Secrets에서 Firebase 설정 로드 시도 (배포 환경)
+    if not firebase_config and "FIREBASE_CONFIG_JSON" in st.secrets:
+        try:
+            firebase_config = json.loads(st.secrets["FIREBASE_CONFIG_JSON"])
+            st.info("Streamlit Secrets에서 Firebase 설정을 로드했습니다.")
+        except json.JSONDecodeError:
+            st.error("Streamlit Secrets의 Firebase 설정 JSON 파싱 오류.")
+            firebase_config = {} # 파싱 실패 시 빈 상태로 유지
+    
+    # 3. Secrets도 없거나 실패한 경우, 로컬 파일에서 Firebase 설정 로드 시도 (로컬 개발 환경)
     if not firebase_config and os.path.exists("firebase_service_account.json"):
         try:
             with open("firebase_service_account.json", "r", encoding="utf-8") as f:
@@ -75,6 +86,7 @@ if FIREBASE_AVAILABLE:
         except Exception as e:
             st.error(f"로컬 Firebase 서비스 계정 파일 로드 중 오류 발생: {e}")
             firebase_config = {} # 로드 실패 시 빈 상태로 유지
+
 
     if 'firebase_initialized' not in st.session_state:
         st.session_state.firebase_initialized = False # 초기 상태 설정
@@ -148,7 +160,7 @@ if FIREBASE_AVAILABLE:
 
         else: # firebase_config가 없거나 다른 문제
             if not firebase_config:
-                st.error("Firebase 설정이 올바르지 않습니다. 앱을 실행할 수 없습니다. 'firebase_service_account.json' 파일을 확인하거나 Canvas 환경 설정을 확인해주세요.")
+                st.error("Firebase 설정이 올바르지 않습니다. 앱을 실행할 수 없습니다. 'firebase_service_account.json' 파일을 확인하거나 Streamlit Cloud Secrets에 'FIREBASE_CONFIG_JSON'을 설정해주세요.")
             st.session_state.user_id = "no_firebase_config"
 else: # Firebase Admin SDK가 설치되지 않은 경우
     st.session_state.firebase_initialized = False
