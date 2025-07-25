@@ -7,6 +7,8 @@ import json # Firebase config 파싱을 위해 추가
 import firebase_admin
 
 # Firebase 관련 import
+# Firebase Admin SDK를 사용합니다. Streamlit Cloud 배포 시에는 클라이언트 SDK 사용을 고려해야 합니다.
+# 이 코드는 Canvas 환경에 맞춰 설계되었습니다.
 try:
     import firebase_admin
     from firebase_admin import credentials, initialize_app
@@ -20,11 +22,17 @@ except ImportError:
 
 # --- API 및 모델 설정 ---
 
+# API 키는 st.secrets 등을 통해 안전하게 관리하는 것을 권장합니다.
 try:
+    # st.secrets에서 Google API 키를 가져옵니다.
+    # .streamlit/secrets.toml 파일에 GOOGLE_API_KEY = "YOUR_API_KEY" 형식으로 저장하거나
+    # Streamlit Cloud Secrets에 설정해야 합니다.
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except KeyError:
     st.error("Google API Key를 찾을 수 없습니다. .streamlit/secrets.toml 파일을 확인하거나 Streamlit Cloud Secrets에 설정해주세요.")
-    GOOGLE_API_KEY = "AIzaSyAEJ-RJf4PqQPqaHe2a_rDt0JFZ_--Klnw" # 임시 키, 실제 배포 시 제거 권장
+    # API 키가 없을 경우 앱이 작동하지 않으므로, 임시로 하드코딩된 키를 사용합니다.
+    # 실제 배포 시에는 이 부분을 제거하고 secrets를 통해 키를 제공해야 합니다.
+    GOOGLE_API_KEY = "YOUR_GOOGLE_API_KEY_HERE" # 실제 키로 변경하세요!
     st.info("임시 Google API Key로 작동합니다. 일부 기능이 제한될 수 있습니다.")
 
 
@@ -86,6 +94,7 @@ if FIREBASE_AVAILABLE:
         st.session_state.user_id = "loading_user" # 로딩 중 상태
         st.session_state.logged_in = False # 로그인 상태 초기화
         st.session_state.current_username = None # 현재 로그인된 사용자 이름
+        st.session_state.app_id = app_id # app_id를 session_state에 저장
 
         # initialize_app()이 이미 초기화되었는지 확인하는 로직 개선
         firebase_app_already_initialized = False
@@ -129,23 +138,25 @@ if FIREBASE_AVAILABLE:
             st.session_state.auth = auth
             
             # 이미 로그인된 사용자 정보가 있다면 가져오기 (이전 세션의 사용자 ID가 있다면)
-            # Admin SDK는 'current_user' 개념이 없음.
-            # 이 로직은 Streamlit 세션 자체에서 사용자 ID를 유지하는 경우에만 의미가 있음.
-            # 실제 Admin SDK에서는 요청마다 인증 상태를 확인해야 함.
-            # 여기서는 단순히 세션 상태를 기반으로 로그인 상태를 결정.
             if st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
                 try:
+                    # 사용자 ID가 유효한지 Firebase Auth에서 확인
                     user_record = st.session_state.auth.get_user(st.session_state.user_id)
                     st.session_state.logged_in = True
+                    
                     # 사용자 이름 매핑에서 사용자 이름 가져오기 시도
-                    user_map_collection_ref = st.session_state.db.collection('artifacts').document(app_id).collection('public').collection('username_to_uid_map')
-                    query = user_map_collection_ref.where('firebase_uid', '==', user_record.uid).limit(1).get()
+                    # artifacts/{appId}/public/username_to_uid_map/mappings/{documentId}
+                    user_map_mappings_collection_ref = st.session_state.db.collection('artifacts').document(app_id).collection('public').document('username_to_uid_map').collection('mappings')
+                    
+                    query = user_map_mappings_collection_ref.where('firebase_uid', '==', user_record.uid).limit(1).get()
+
                     if query:
                         st.session_state.current_username = query[0].to_dict()['username']
                     else:
                         st.session_state.current_username = f"익명_{user_record.uid[:4]}"
                     st.success(f"기존 세션 복원! 사용자: {st.session_state.current_username} (ID: {st.session_state.user_id})")
-                except Exception: # 사용자 ID가 유효하지 않거나 찾을 수 없는 경우
+                except Exception as e: # 사용자 ID가 유효하지 않거나 찾을 수 없는 경우
+                    st.error(f"기존 세션 복원 중 오류 발생: {e}")
                     st.session_state.user_id = "not_authenticated"
                     st.session_state.logged_in = False
                     st.session_state.current_username = None
@@ -258,12 +269,20 @@ def handle_custom_login_signup(username_input):
         return
 
     # 사용자 이름-UID 매핑 컬렉션 참조 (public 접근)
-    user_map_collection_ref = st.session_state.db.collection('artifacts').document(st.session_state.app_id).collection('public').collection('username_to_uid_map')
+    # Firestore 보안 규칙에서 이 컬렉션에 대한 읽기/쓰기 권한을 적절히 설정해야 합니다.
+    # 경로: artifacts/{appId}/public/username_to_uid_map/mappings/{documentId}
+    user_map_mappings_collection_ref = (
+        st.session_state.db.collection('artifacts')
+        .document(st.session_state.app_id)
+        .collection('public')
+        .document('username_to_uid_map')  # username_to_uid_map은 문서여야 합니다.
+        .collection('mappings')            # 그 안에 실제 매핑 문서들이 들어갑니다.
+    )
 
     try:
         # 1. 기존 사용자 이름으로 로그인 시도
         # Firestore에서 해당 username에 매핑된 문서 찾기
-        query = user_map_collection_ref.where('username', '==', username_input).limit(1).get()
+        query = user_map_mappings_collection_ref.where('username', '==', username_input).limit(1).get()
         
         if query: # 사용자 이름이 이미 존재
             user_doc = query[0]
@@ -272,7 +291,7 @@ def handle_custom_login_signup(username_input):
             # Firebase Auth에 해당 UID를 가진 사용자가 실제로 존재하는지 확인
             try:
                 user_record = st.session_state.auth.get_user(firebase_uid)
-                # 사용자가 존재하면 로그인 처리
+                # 사용자가 존재하면 로그인 처리 (Streamlit 세션 상태 업데이트)
                 st.session_state.user_id = user_record.uid
                 st.session_state.logged_in = True
                 st.session_state.current_username = username_input
@@ -282,9 +301,9 @@ def handle_custom_login_signup(username_input):
             except Exception as e:
                 # Firestore에는 매핑되어 있지만 Firebase Auth에 사용자가 없는 경우 (오류 상태)
                 st.error(f"Firebase Auth에 해당 사용자 ID({firebase_uid})가 없습니다. 이 사용자 이름은 사용할 수 없습니다. 다시 시도해주세요. (오류: {e})")
-                # Firestore 매핑 삭제 고려
-                user_doc.reference.delete()
-                st.info("사용자 이름-UID 매핑을 정리했습니다. 다시 시도해주세요.")
+                # 필요하다면 Firestore 매핑을 삭제하여 일관성 유지
+                # user_doc.reference.delete()
+                # st.info("사용자 이름-UID 매핑을 정리했습니다. 다시 시도해주세요.")
                 return
 
         else: # 새로운 사용자 이름
@@ -299,7 +318,7 @@ def handle_custom_login_signup(username_input):
                 return # 오류 발생 시 함수 종료
 
             # 사용자 이름과 새 Firebase UID 매핑 저장 (Firestore)
-            user_map_collection_ref.add({
+            user_map_mappings_collection_ref.add({
                 'username': username_input,
                 'firebase_uid': new_firebase_uid
             })
@@ -319,7 +338,7 @@ def handle_custom_login_signup(username_input):
         st.session_state.current_username = None
 
 def logout_user():
-    """현재 사용자를 로그아웃합니다. (Streamlit 세션에서만)"""
+    """현재 사용자를 로그아웃합니다. (Streamlit 세션 상태만 초기화)"""
     if not st.session_state.get('firebase_initialized') or not FIREBASE_AVAILABLE:
         st.error("Firebase가 초기화되지 않았습니다. 로그아웃할 수 없습니다.")
         return
@@ -621,7 +640,7 @@ elif page == "단어 목록":
         with col_sort2:
             if st.button("단어 길이 순 정렬"):
                 st.session_state.current_sort_order = "length"
-                st.session_state.display_words = sort_by_length(list(st.session_state.all_words))
+                st.session_state.display_님("단어 길이 순 정렬")
         with col_sort3:
             if st.button("퀴즈 맞춘 순 정렬"):
                 st.session_state.current_sort_order = "quiz_correct"
