@@ -278,4 +278,227 @@ def translate_to_korean(text):
         st.error(f"번역 API 요청 중 오류 발생: {e}")
         return "번역 API 요청 중 오류 발생"
 
-def merge_so
+def merge_sort(arr):
+    """
+    병합 정렬(Merge Sort) 알고리즘 구현.
+    리스트를 재귀적으로 절반으로 나누고, 정렬된 서브리스트들을 병합합니다.
+    """
+    if len(arr) <= 1:
+        return arr
+
+    mid = len(arr) // 2
+    left_half = arr[:mid]
+    right_half = arr[mid:]
+
+    left_half = merge_sort(left_half)
+    right_half = merge_sort(right_half)
+
+    return merge(left_half, right_half)
+
+def merge(left, right):
+    """
+    병합 정렬의 병합(Merge) 단계.
+    두 개의 정렬된 리스트를 하나의 정렬된 리스트로 병합합니다.
+    """
+    merged_list = []
+    left_idx, right_idx = 0, 0
+
+    while left_idx < len(left) and right_idx < len(right):
+        if left[left_idx] < right[right_idx]:
+            merged_list.append(left[left_idx])
+            left_idx += 1
+        else:
+            merged_list.append(right[right_idx])
+            right_idx += 1
+
+    # 남아있는 요소들 추가
+    merged_list.extend(left[left_idx:])
+    merged_list.extend(right[right_idx:])
+    return merged_list
+
+def sort_by_length(arr):
+    """
+    단어 길이에 따라 리스트를 정렬합니다.
+    """
+    return sorted(arr, key=len)
+
+def sort_by_quiz_correct_order(all_words, correctly_answered_words_in_order):
+    """
+    퀴즈 맞춘 순서대로 단어를 정렬합니다.
+    맞춘 단어는 맞춘 순서대로, 나머지 단어는 사전 순으로 정렬합니다.
+    """
+    correct_set = set(correctly_answered_words_in_order)
+    
+    sorted_correct = [word for word in correctly_answered_words_in_order if word in all_words]
+    unanswered_words = sorted([word for word in all_words if word not in correct_set])
+    
+    return sorted_correct + unanswered_words
+
+
+def load_new_word():
+    """새 단어를 불러오고 모든 관련 상태를 초기화하는 함수"""
+    # 사용 가능한 단어 목록이 비어 있으면, 모든 단어를 다시 사용 가능하게 초기화
+    if not st.session_state.get('available_words') or len(st.session_state.available_words) == 0:
+        st.session_state.available_words = list(st.session_state.all_words) # 전체 단어 목록을 복사
+        st.session_state.used_words = [] # 사용된 단어 목록 초기화
+        st.info("모든 단어를 사용했습니다! 단어 목록이 초기화됩니다.")
+
+    # 사용 가능한 단어 중에서 랜덤으로 하나 선택
+    new_word = random.choice(st.session_state.available_words)
+    st.session_state.current_word = new_word
+    
+    # 선택된 단어를 사용 가능한 단어 목록에서 제거하고, 사용된 단어 목록에 추가
+    st.session_state.available_words.remove(new_word)
+    st.session_state.used_words.append(new_word) # used_words는 중복 방지 로직에만 사용됨
+    
+    first_def, synonyms_for_hints = get_word_data(new_word)
+    st.session_state.first_def = first_def
+    st.session_state.translated_def = translate_to_korean(first_def)
+    
+    # 힌트 제공을 위한 유의어 목록 (정답으로 인정되지 않음)
+    st.session_state.synonyms_for_hints = [s.lower() for s in synonyms_for_hints if s.lower() != new_word.lower()]
+    
+    # 정답 단어 및 힌트 단어들의 임베딩을 미리 계산하여 저장
+    words_to_embed_for_similarity = [new_word] + st.session_state.synonyms_for_hints
+    st.session_state.embeddings_for_similarity = model.encode(words_to_embed_for_similarity)
+    
+    st.session_state.input_key = f"input_{random.randint(1, 1000000)}"
+    st.session_state.answered_correctly = False
+    st.session_state.last_hint = "" # 마지막 힌트 메시지 초기화
+
+    # 새로운 단어를 로드할 때마다 Firestore에 현재 세션 데이터 저장
+    if FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
+        save_user_session_data()
+
+# --- Streamlit 앱 UI ---
+
+# 앱 초기 로딩 시 Firebase 초기화 및 사용자 데이터 로드
+if 'all_words' not in st.session_state:
+    # Firebase 초기화 및 인증은 이미 위에서 처리됨
+    # Canvas 환경에서 제공되는 app_id를 session_state에 저장
+    st.session_state.app_id = globals().get('__app_id', 'default-app-id')
+
+    if FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
+        load_user_session_data() # Firebase에서 데이터 로드
+    else:
+        # Firebase 초기화 실패 시 또는 Firebase 사용 불가 시 기본 단어 로드
+        st.session_state.all_words = load_words_from_file(WORDS_FILE)
+        st.session_state.available_words = list(st.session_state.all_words)
+        st.session_state.used_words = []
+        st.session_state.correctly_answered_words_in_order = []
+
+if 'current_word' not in st.session_state:
+    load_new_word()
+
+# 사이드바 내비게이션
+st.sidebar.title("메뉴")
+page = st.sidebar.radio("페이지 선택", ["퀴즈", "단어 목록"])
+
+# 사용자 ID 표시 (멀티 유저 앱 가이드라인 준수)
+if st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
+    st.sidebar.markdown(f"**사용자 ID:** `{st.session_state.user_id}`")
+else:
+    st.sidebar.markdown(f"**사용자 ID:** `로딩 중...`")
+
+
+if page == "퀴즈":
+    st.title("🧠 스마트 영단어 퀴즈")
+    st.caption("의미가 비슷하면 유사도 수치로 힌트를 드려요!")
+
+    st.subheader("힌트: 다음 뜻에 해당하는 영어 단어를 맞춰보세요.")
+    st.markdown(f"**영어 뜻:** `{st.session_state.first_def}`")
+    st.markdown(f"→ **한글 번역:** `{st.session_state.translated_def}`")
+
+    if not st.session_state.get('answered_correctly', False):
+        user_input = st.text_input("영어 단어를 입력하세요:", key=st.session_state.input_key)
+        
+        # 마지막 힌트가 있다면 표시
+        if st.session_state.last_hint:
+            st.info(st.session_state.last_hint)
+            st.session_state.last_hint = "" # 표시 후 초기화
+
+        if st.button("정답 확인"):
+            user_answer = user_input.strip().lower()
+            current_word_lower = st.session_state.current_word.lower()
+
+            if user_answer == current_word_lower:
+                st.session_state.answered_correctly = True
+                st.session_state.last_hint = "" # 정답 시 힌트 초기화
+                # 정답 맞춘 단어 목록에 추가 (중복 방지)
+                if current_word_lower not in st.session_state.correctly_answered_words_in_order:
+                    st.session_state.correctly_answered_words_in_order.append(current_word_lower)
+                
+                # 정답 시 Firestore에 데이터 저장
+                if FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
+                    save_user_session_data()
+                st.rerun()
+            else:
+                if user_answer: # 입력값이 있을 때만 유사도 계산
+                    embedding_user = model.encode(user_answer)
+                    
+                    max_similarity = 0
+                    
+                    # 정답 단어와의 유사도 계산
+                    sim_with_main_word = util.cos_sim(st.session_state.embeddings_for_similarity[0], embedding_user).item()
+                    max_similarity = sim_with_main_word
+
+                    # 힌트용 유의어들과의 유사도 계산 (가장 높은 유사도 선택)
+                    for i, syn_embedding in enumerate(st.session_state.embeddings_for_similarity[1:]):
+                        sim_with_syn = util.cos_sim(syn_embedding, embedding_user).item()
+                        if sim_with_syn > max_similarity:
+                            max_similarity = sim_with_syn
+                    
+                    if max_similarity >= HINT_THRESHOLD:
+                        st.session_state.last_hint = f"입력하신 단어의 의미가 정답 단어와 비슷해요! 😉 유사도: **{max_similarity:.2f}**"
+                        st.warning(st.session_state.last_hint) # 즉시 표시
+                    else:
+                        st.error(f"틀렸어요. 다시 시도해보세요. (유사도: {max_similarity:.2f})")
+                else:
+                    st.error("단어를 입력해주세요.")
+
+    else:
+        st.success(f"정답입니다! 🎉 정답은 **{st.session_state.current_word}**였습니다.")
+        if st.button("다음 단어"):
+            load_new_word()
+            st.rerun()
+
+    if st.button("정답 공개", key="reveal_answer"):
+        st.info(f"정답: **{st.session_state.current_word}**")
+        if st.session_state.synonyms_for_hints:
+            st.info(f"이 단어의 다른 유사 단어들 (힌트 목적으로 사용): `{', '.join(st.session_state.synonyms_for_hints)}`")
+
+elif page == "단어 목록":
+    st.title("📚 단어 목록")
+    st.markdown("앱에 로드된 모든 영단어 목록입니다.")
+
+    if st.session_state.all_words:
+        st.subheader("정렬 옵션:")
+        col_sort1, col_sort2, col_sort3 = st.columns(3)
+        
+        # 기본 정렬 상태 (사전 순)
+        if 'current_sort_order' not in st.session_state:
+            st.session_state.current_sort_order = "alphabetical"
+            st.session_state.display_words = merge_sort(list(st.session_state.all_words))
+
+        with col_sort1:
+            if st.button("사전 순 정렬"):
+                st.session_state.current_sort_order = "alphabetical"
+                st.session_state.display_words = merge_sort(list(st.session_state.all_words))
+        with col_sort2:
+            if st.button("단어 길이 순 정렬"):
+                st.session_state.current_sort_order = "length"
+                st.session_state.display_words = sort_by_length(list(st.session_state.all_words))
+        with col_sort3:
+            if st.button("퀴즈 맞춘 순 정렬"):
+                st.session_state.current_sort_order = "quiz_correct"
+                st.session_state.display_words = sort_by_quiz_correct_order(
+                    list(st.session_state.all_words), 
+                    st.session_state.correctly_answered_words_in_order
+                )
+        
+        st.markdown(f"---")
+        st.markdown(f"**현재 정렬 방식:** {'사전 순' if st.session_state.current_sort_order == 'alphabetical' else '단어 길이 순' if st.session_state.current_sort_order == 'length' else '퀴즈 맞춘 순'}")
+        st.write(st.session_state.display_words)
+
+    else:
+        st.warning("불러올 단어가 없습니다. 'words.txt' 파일을 확인해주세요.")
