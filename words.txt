@@ -1,0 +1,10 @@
+happy
+joyful
+sad
+angry
+brave
+courageous
+kind
+gentle
+intelligent
+beautiful
