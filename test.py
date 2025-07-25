@@ -7,8 +7,6 @@ import json # Firebase config 파싱을 위해 추가
 import firebase_admin
 
 # Firebase 관련 import
-# Firebase Admin SDK를 사용합니다. Streamlit Cloud 배포 시에는 클라이언트 SDK 사용을 고려해야 합니다.
-# 이 코드는 Canvas 환경에 맞춰 설계되었습니다.
 try:
     import firebase_admin
     from firebase_admin import credentials, initialize_app
@@ -22,16 +20,10 @@ except ImportError:
 
 # --- API 및 모델 설정 ---
 
-# API 키는 st.secrets 등을 통해 안전하게 관리하는 것을 권장합니다.
 try:
-    # st.secrets에서 Google API 키를 가져옵니다.
-    # .streamlit/secrets.toml 파일에 GOOGLE_API_KEY = "YOUR_API_KEY" 형식으로 저장하거나
-    # Streamlit Cloud Secrets에 설정해야 합니다.
     GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 except KeyError:
     st.error("Google API Key를 찾을 수 없습니다. .streamlit/secrets.toml 파일을 확인하거나 Streamlit Cloud Secrets에 설정해주세요.")
-    # API 키가 없을 경우 앱이 작동하지 않으므로, 임시로 하드코딩된 키를 사용합니다.
-    # 실제 배포 시에는 이 부분을 제거하고 secrets를 통해 키를 제공해야 합니다.
     GOOGLE_API_KEY = "AIzaSyAEJ-RJf4PqQPqaHe2a_rDt0JFZ_--Klnw" # 임시 키, 실제 배포 시 제거 권장
     st.info("임시 Google API Key로 작동합니다. 일부 기능이 제한될 수 있습니다.")
 
@@ -114,13 +106,15 @@ if FIREBASE_AVAILABLE:
                 # Canvas에서 제공되는 초기 인증 토큰으로 로그인 시도
                 if initial_auth_token:
                     try:
-                        user = auth.sign_in_with_custom_token(initial_auth_token)
-                        st.session_state.user_id = user.uid
+                        # Admin SDK의 auth는 클라이언트처럼 직접 로그인하는 함수가 아님.
+                        # 여기서는 토큰을 검증하고 사용자 UID를 얻는 용도로 사용.
+                        decoded_token = auth.verify_id_token(initial_auth_token)
+                        st.session_state.user_id = decoded_token['uid']
                         st.session_state.logged_in = True
-                        st.session_state.current_username = f"Canvas_User_{user.uid[:4]}" # 임시 사용자 이름
+                        st.session_state.current_username = f"Canvas_User_{decoded_token['uid'][:4]}" # 임시 사용자 이름
                         st.success(f"Canvas 인증 성공! 사용자 ID: {st.session_state.user_id}")
                     except Exception as e:
-                        st.error(f"Canvas Custom Token 로그인 실패: {e}")
+                        st.error(f"Canvas Custom Token 또는 ID Token 검증 실패: {e}")
                         st.session_state.user_id = "anonymous_user_error"
                 # 초기 인증 토큰이 없거나 실패하면, 사용자 계정 시스템을 통해 로그인하도록 유도
                 else:
@@ -134,29 +128,29 @@ if FIREBASE_AVAILABLE:
             st.session_state.db = firestore.client()
             st.session_state.auth = auth
             
-            # 이미 로그인된 사용자 정보가 있다면 가져오기 (익명 사용자 포함)
-            current_user = None
-            try:
-                current_user = st.session_state.auth.get_user(st.session_state.auth.current_user.uid)
-            except Exception:
-                pass # 현재 로그인된 사용자 없음
-
-            if current_user:
-                st.session_state.user_id = current_user.uid
-                st.session_state.logged_in = True
-                # 사용자 이름 매핑에서 사용자 이름 가져오기 시도
-                user_map_ref = st.session_state.db.collection('artifacts').document(app_id).collection('public').document('username_to_uid_map')
-                user_map_doc = user_map_ref.get()
-                if user_map_doc.exists:
-                    for username, uid in user_map_doc.to_dict().items():
-                        if uid == current_user.uid:
-                            st.session_state.current_username = username
-                            break
-                if not st.session_state.current_username:
-                    st.session_state.current_username = f"익명_{current_user.uid[:4]}"
-                st.success(f"기존 세션 복원! 사용자: {st.session_state.current_username} (ID: {st.session_state.user_id})")
-            else:
-                st.session_state.user_id = "not_authenticated"
+            # 이미 로그인된 사용자 정보가 있다면 가져오기 (이전 세션의 사용자 ID가 있다면)
+            # Admin SDK는 'current_user' 개념이 없음.
+            # 이 로직은 Streamlit 세션 자체에서 사용자 ID를 유지하는 경우에만 의미가 있음.
+            # 실제 Admin SDK에서는 요청마다 인증 상태를 확인해야 함.
+            # 여기서는 단순히 세션 상태를 기반으로 로그인 상태를 결정.
+            if st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
+                try:
+                    user_record = st.session_state.auth.get_user(st.session_state.user_id)
+                    st.session_state.logged_in = True
+                    # 사용자 이름 매핑에서 사용자 이름 가져오기 시도
+                    user_map_collection_ref = st.session_state.db.collection('artifacts').document(app_id).collection('public').collection('username_to_uid_map')
+                    query = user_map_collection_ref.where('firebase_uid', '==', user_record.uid).limit(1).get()
+                    if query:
+                        st.session_state.current_username = query[0].to_dict()['username']
+                    else:
+                        st.session_state.current_username = f"익명_{user_record.uid[:4]}"
+                    st.success(f"기존 세션 복원! 사용자: {st.session_state.current_username} (ID: {st.session_state.user_id})")
+                except Exception: # 사용자 ID가 유효하지 않거나 찾을 수 없는 경우
+                    st.session_state.user_id = "not_authenticated"
+                    st.session_state.logged_in = False
+                    st.session_state.current_username = None
+                    st.info("가상의 아이디로 로그인하거나 계정을 생성해주세요.")
+            else: # 초기 상태
                 st.info("가상의 아이디로 로그인하거나 계정을 생성해주세요.")
 
         else: # firebase_config가 없거나 다른 문제
@@ -174,14 +168,12 @@ else: # Firebase Admin SDK가 설치되지 않은 경우
 
 def get_user_data_ref():
     """현재 사용자의 학습 데이터 Firestore 참조를 반환합니다."""
-    # Firestore 보안 규칙에 따라 private data 경로 사용: /artifacts/{appId}/users/{userId}/{your_collection_name}
     if st.session_state.get('db') and st.session_state.get('user_id') and st.session_state.get('app_id') and st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
         return st.session_state.db.collection('artifacts').document(st.session_state.app_id).collection('users').document(st.session_state.user_id).collection('word_data').document('user_session')
-    return None # Firebase 초기화 안 된 경우 또는 사용자 인증 안 된 경우
+    return None 
 
 def load_user_session_data():
     """Firestore에서 사용자의 학습 세션 데이터를 로드합니다."""
-    # Firebase가 준비되지 않았거나 사용자 인증이 안 된 경우 파일에서 로드
     if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
         st.warning("Firebase가 준비되지 않았거나 로그인되지 않아 학습 데이터를 로드할 수 없습니다. 파일에서 단어를 불러옵니다.")
         st.session_state.all_words = load_words_from_file(WORDS_FILE)
@@ -232,8 +224,7 @@ def load_user_session_data():
 def save_user_session_data():
     """현재 사용자의 학습 세션 데이터를 Firestore에 저장합니다."""
     if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
-        # st.warning("Firebase가 준비되지 않아 학습 데이터를 저장할 수 없습니다.")
-        return # Firebase가 준비되지 않았거나 사용자 인증 안 된 경우 저장하지 않음
+        return 
 
     try:
         doc_ref = get_user_data_ref()
@@ -244,7 +235,6 @@ def save_user_session_data():
                 'correctly_answered_words_in_order': st.session_state.correctly_answered_words_in_order
             }
             doc_ref.set(data_to_save)
-            # st.success("학습 데이터가 저장되었습니다.") # 너무 자주 표시될 수 있으므로 주석 처리
         else:
             st.warning("Firebase 데이터 참조를 얻을 수 없어 데이터를 저장할 수 없습니다.")
     except Exception as e:
@@ -268,35 +258,47 @@ def handle_custom_login_signup(username_input):
         return
 
     # 사용자 이름-UID 매핑 컬렉션 참조 (public 접근)
-    # Firestore 보안 규칙에서 이 컬렉션에 대한 읽기/쓰기 권한을 적절히 설정해야 합니다.
-    # 예: allow read: if true; allow create: if request.auth != null;
-    user_map_collection_ref = st.session_state.db.collection('artifacts').document(st.session_state.app_id).collection('public').document('username_to_uid_map').collection('mappings')
+    user_map_collection_ref = st.session_state.db.collection('artifacts').document(st.session_state.app_id).collection('public').collection('username_to_uid_map')
 
     try:
         # 1. 기존 사용자 이름으로 로그인 시도
+        # Firestore에서 해당 username에 매핑된 문서 찾기
         query = user_map_collection_ref.where('username', '==', username_input).limit(1).get()
         
         if query: # 사용자 이름이 이미 존재
             user_doc = query[0]
             firebase_uid = user_doc.to_dict()['firebase_uid']
             
-            # 해당 UID로 Custom Token 생성 및 로그인
-            custom_token = st.session_state.auth.create_custom_token(firebase_uid)
-            user = st.session_state.auth.sign_in_with_custom_token(custom_token)
-            
-            st.session_state.user_id = user.uid
-            st.session_state.logged_in = True
-            st.session_state.current_username = username_input
-            st.success(f"로그인 성공! 환영합니다, {username_input}님!")
-            load_user_session_data() # 로그인 후 사용자 데이터 로드
-            st.rerun()
-        else: # 새로운 사용자 이름
-            # 2. 새로운 계정 생성 (익명 Firebase 사용자 생성 후 매핑)
-            # 먼저 익명으로 로그인하여 Firebase UID를 얻습니다.
-            new_firebase_user = st.session_state.auth.sign_in_anonymously()
-            new_firebase_uid = new_firebase_user.uid
+            # Firebase Auth에 해당 UID를 가진 사용자가 실제로 존재하는지 확인
+            try:
+                user_record = st.session_state.auth.get_user(firebase_uid)
+                # 사용자가 존재하면 로그인 처리
+                st.session_state.user_id = user_record.uid
+                st.session_state.logged_in = True
+                st.session_state.current_username = username_input
+                st.success(f"로그인 성공! 환영합니다, {username_input}님!")
+                load_user_session_data() # 로그인 후 사용자 데이터 로드
+                st.rerun()
+            except Exception as e:
+                # Firestore에는 매핑되어 있지만 Firebase Auth에 사용자가 없는 경우 (오류 상태)
+                st.error(f"Firebase Auth에 해당 사용자 ID({firebase_uid})가 없습니다. 이 사용자 이름은 사용할 수 없습니다. 다시 시도해주세요. (오류: {e})")
+                # Firestore 매핑 삭제 고려
+                user_doc.reference.delete()
+                st.info("사용자 이름-UID 매핑을 정리했습니다. 다시 시도해주세요.")
+                return
 
-            # 사용자 이름과 새 Firebase UID 매핑 저장
+        else: # 새로운 사용자 이름
+            # 2. 새로운 계정 생성 (Firebase Admin SDK의 create_user 사용)
+            try:
+                # Firebase에 새로운 사용자 계정 생성 (UID만 생성, display_name 설정)
+                user_record = st.session_state.auth.create_user(display_name=username_input)
+                new_firebase_uid = user_record.uid
+            except Exception as e:
+                # 다른 생성 오류 (예: 이미 너무 많은 사용자 또는 서비스 제한)
+                st.error(f"Firebase 사용자 계정 생성 실패: {e}")
+                return # 오류 발생 시 함수 종료
+
+            # 사용자 이름과 새 Firebase UID 매핑 저장 (Firestore)
             user_map_collection_ref.add({
                 'username': username_input,
                 'firebase_uid': new_firebase_uid
@@ -307,8 +309,7 @@ def handle_custom_login_signup(username_input):
             st.session_state.logged_in = True
             st.session_state.current_username = username_input
             st.success(f"계정 생성 및 로그인 성공! 환영합니다, {username_input}님!")
-            # 새 계정이므로 데이터는 초기화 상태로 로드될 것임
-            load_user_session_data()
+            load_user_session_data() # 새 계정이므로 데이터는 초기화 상태로 로드될 것임
             st.rerun()
 
     except Exception as e:
@@ -318,13 +319,14 @@ def handle_custom_login_signup(username_input):
         st.session_state.current_username = None
 
 def logout_user():
-    """현재 사용자를 로그아웃합니다."""
+    """현재 사용자를 로그아웃합니다. (Streamlit 세션에서만)"""
     if not st.session_state.get('firebase_initialized') or not FIREBASE_AVAILABLE:
         st.error("Firebase가 초기화되지 않았습니다. 로그아웃할 수 없습니다.")
         return
     
     try:
-        st.session_state.auth.sign_out() # Firebase에서 로그아웃
+        # Firebase Admin SDK에는 클라이언트처럼 직접 sign_out 하는 기능이 없습니다.
+        # 따라서 Streamlit 세션 상태를 초기화하여 로그아웃을 모방합니다.
         st.session_state.user_id = "not_authenticated"
         st.session_state.logged_in = False
         st.session_state.current_username = None
@@ -375,6 +377,9 @@ def get_word_data(word):
                 if not definition and meaning.get('definitions'):
                     definition = meaning['definitions'][0].get('definition')
                 synonyms.extend(s for s in meaning.get('synonyms', []) if s not in synonyms)
+        else:
+            # API 호출 실패 시 디버깅 정보 출력
+            st.warning(f"단어 '{word}'의 정의를 가져오지 못했습니다. 상태 코드: {response.status_code}, 응답: {response.text}")
     except requests.exceptions.RequestException as e:
         st.error(f"API 요청 중 오류 발생: {e}")
         return "API 요청 중 오류 발생", []
@@ -467,7 +472,7 @@ def load_new_word():
     
     # 선택된 단어를 사용 가능한 단어 목록에서 제거하고, 사용된 단어 목록에 추가
     st.session_state.available_words.remove(new_word)
-    st.session_state.used_words.append(new_word) # used_words는 중복 방지 로직에만 사용됨
+    st.session_state.used_words.append(new_word) 
     
     first_def, synonyms_for_hints = get_word_data(new_word)
     st.session_state.first_def = first_def
@@ -577,7 +582,7 @@ if page == "퀴즈":
                         
                         if max_similarity >= HINT_THRESHOLD:
                             st.session_state.last_hint = f"입력하신 단어의 의미가 정답 단어와 비슷해요! 😉 유사도: **{max_similarity:.2f}**"
-                            st.warning(st.session_state.last_hint) # 즉시 표시
+                            st.warning(st.session_state.last_hint) 
                         else:
                             st.error(f"틀렸어요. 다시 시도해보세요. (유사도: {max_similarity:.2f})")
                     else:
@@ -631,4 +636,3 @@ elif page == "단어 목록":
 
     else:
         st.warning("불러올 단어가 없습니다. 'words.txt' 파일을 확인해주세요.")
-    
