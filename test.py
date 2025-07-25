@@ -231,7 +231,7 @@ if page == "퀴즈":
                         st.session_state.last_hint = f"입력하신 단어의 의미가 정답 단어와 비슷해요! 😉 유사도: **{max_similarity:.2f}**"
                         st.warning(st.session_state.last_hint) # 즉시 표시
                     else:
-                        st.error(f"틀렸어요. 다시 시도해보세요. (유사도: {max_similarity:.2f})")
+                        st.error(f"틀렸어요. 다시 시도해보세요.")
                 else:
                     st.error("단어를 입력해주세요.")
 
