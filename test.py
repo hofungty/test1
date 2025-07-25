@@ -355,10 +355,18 @@ def logout_user():
         st.session_state.available_words = list(st.session_state.all_words)
         st.session_state.used_words = []
         st.session_state.correctly_answered_words_in_order = []
+        
+        # 퀴즈 페이지를 리셋하기 위해 현재 단어 상태를 명확히 초기화
+        if 'current_word' in st.session_state:
+            del st.session_state.current_word # 현재 단어를 삭제하여 다음 로드 시 새로운 단어가 선택되도록 함
+        if 'answered_correctly' in st.session_state:
+            st.session_state.answered_correctly = False # 정답 상태 초기화
+        if 'last_hint' in st.session_state:
+            st.session_state.last_hint = "" # 힌트 메시지 초기화
+
         st.rerun()
     except Exception as e:
         st.error(f"로그아웃 중 오류 발생: {e}")
-
 
 # --- 기존 데이터 처리 함수들 ---
 
