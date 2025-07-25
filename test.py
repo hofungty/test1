@@ -9,7 +9,7 @@ import json # Firebase config 파싱을 위해 추가
 # Firebase Admin SDK를 사용합니다. Streamlit Cloud 배포 시에는 클라이언트 SDK 사용을 고려해야 합니다.
 # 이 코드는 Canvas 환경에 맞춰 설계되었습니다.
 try:
-    import firebase_admin # <--- 이 줄을 추가했습니다.
+    import firebase_admin
     from firebase_admin import credentials, initialize_app
     from firebase_admin import firestore
     from firebase_admin import auth
@@ -65,15 +65,27 @@ if FIREBASE_AVAILABLE:
     except json.JSONDecodeError:
         st.error("Firebase 설정 JSON 파싱 오류.")
 
+    # 로컬 테스트를 위한 Firebase 서비스 계정 키 로드 (Canvas 환경에서는 __firebase_config 사용)
+    # firebase_config가 비어있고, 로컬에 서비스 계정 파일이 있다면 로드 시도
+    if not firebase_config and os.path.exists("firebase_service_account.json"):
+        try:
+            with open("firebase_service_account.json", "r", encoding="utf-8") as f:
+                firebase_config = json.load(f)
+            st.info("로컬 'firebase_service_account.json' 파일에서 Firebase 설정을 로드했습니다.")
+        except Exception as e:
+            st.error(f"로컬 Firebase 서비스 계정 파일 로드 중 오류 발생: {e}")
+            firebase_config = {} # 로드 실패 시 빈 상태로 유지
+
     if 'firebase_initialized' not in st.session_state:
         st.session_state.firebase_initialized = False # 초기 상태 설정
         st.session_state.user_id = "loading_user" # 로딩 중 상태
+        st.session_state.logged_in = False # 로그인 상태 초기화
+        st.session_state.current_username = None # 현재 로그인된 사용자 이름
 
         # initialize_app()이 이미 초기화되었는지 확인하는 로직 개선
         firebase_app_already_initialized = False
         try:
-            # firebase_admin.get_app() 시도하여 이미 초기화된 앱이 있는지 확인
-            firebase_admin.get_app() # 이제 firebase_admin 모듈이 명시적으로 임포트되어 NameError가 발생하지 않습니다.
+            firebase_admin.get_app()
             firebase_app_already_initialized = True
         except ValueError:
             pass # 앱이 아직 초기화되지 않음
@@ -86,59 +98,63 @@ if FIREBASE_AVAILABLE:
                 st.session_state.db = firestore.client()
                 st.session_state.auth = auth
 
-                # 사용자 인증 (Canvas 환경에 맞춰 __initial_auth_token 사용)
+                # Canvas에서 제공되는 초기 인증 토큰으로 로그인 시도
                 if initial_auth_token:
                     try:
-                        # Custom token을 사용하여 로그인 (Canvas에서 제공)
                         user = auth.sign_in_with_custom_token(initial_auth_token)
                         st.session_state.user_id = user.uid
-                        st.success(f"Firebase 인증 성공! 사용자 ID: {st.session_state.user_id}")
+                        st.session_state.logged_in = True
+                        st.session_state.current_username = f"Canvas_User_{user.uid[:4]}" # 임시 사용자 이름
+                        st.success(f"Canvas 인증 성공! 사용자 ID: {st.session_state.user_id}")
                     except Exception as e:
-                        st.error(f"Firebase Custom Token 로그인 실패: {e}")
-                        # Custom Token 실패 시 익명 로그인 시도
-                        try:
-                            user = auth.sign_in_anonymously()
-                            st.session_state.user_id = user.uid
-                            st.warning(f"Custom Token 로그인 실패, 익명 로그인 성공! 사용자 ID: {st.session_state.user_id}")
-                        except Exception as e_anon:
-                            st.error(f"Firebase 익명 로그인 실패: {e_anon}")
-                            st.session_state.user_id = "anonymous_user_error" # Fallback
+                        st.error(f"Canvas Custom Token 로그인 실패: {e}")
+                        st.session_state.user_id = "anonymous_user_error"
+                # 초기 인증 토큰이 없거나 실패하면, 사용자 계정 시스템을 통해 로그인하도록 유도
                 else:
-                    # __initial_auth_token이 없으면 익명 로그인 시도
-                    try:
-                        user = auth.sign_in_anonymously()
-                        st.session_state.user_id = user.uid
-                        st.warning(f"__initial_auth_token 없음, 익명 로그인 성공! 사용자 ID: {st.session_state.user_id}")
-                    except Exception as e_anon:
-                        st.error(f"Firebase 익명 로그인 실패: {e_anon}")
-                        st.session_state.user_id = "anonymous_user_error" # Fallback
+                    st.session_state.user_id = "not_authenticated"
+                    st.info("가상의 아이디로 로그인하거나 계정을 생성해주세요.")
             except Exception as e:
                 st.error(f"Firebase 초기화 중 오류 발생: {e}")
                 st.session_state.user_id = "firebase_init_error"
         elif firebase_app_already_initialized:
-            # 앱이 이미 초기화된 경우, 클라이언트와 인증 정보 재설정
             st.session_state.firebase_initialized = True
             st.session_state.db = firestore.client()
             st.session_state.auth = auth
+            
             # 이미 로그인된 사용자 정보가 있다면 가져오기 (익명 사용자 포함)
-            if st.session_state.auth.current_user:
-                st.session_state.user_id = st.session_state.auth.current_user.uid
-            else: # 현재 사용자가 없으면 다시 익명 로그인 시도
-                try:
-                    user = st.session_state.auth.sign_in_anonymously()
-                    st.session_state.user_id = user.uid
-                    st.warning(f"Firebase 앱 이미 초기화됨, 익명 로그인 성공! 사용자 ID: {st.session_state.user_id}")
-                except Exception as e_anon:
-                    st.error(f"Firebase 앱 초기화 후 익명 로그인 실패: {e_anon}")
-                    st.session_state.user_id = "anonymous_user_error"
+            current_user = None
+            try:
+                current_user = st.session_state.auth.get_user(st.session_state.auth.current_user.uid)
+            except Exception:
+                pass # 현재 로그인된 사용자 없음
+
+            if current_user:
+                st.session_state.user_id = current_user.uid
+                st.session_state.logged_in = True
+                # 사용자 이름 매핑에서 사용자 이름 가져오기 시도
+                user_map_ref = st.session_state.db.collection('artifacts').document(app_id).collection('public').document('username_to_uid_map')
+                user_map_doc = user_map_ref.get()
+                if user_map_doc.exists:
+                    for username, uid in user_map_doc.to_dict().items():
+                        if uid == current_user.uid:
+                            st.session_state.current_username = username
+                            break
+                if not st.session_state.current_username:
+                    st.session_state.current_username = f"익명_{current_user.uid[:4]}"
+                st.success(f"기존 세션 복원! 사용자: {st.session_state.current_username} (ID: {st.session_state.user_id})")
+            else:
+                st.session_state.user_id = "not_authenticated"
+                st.info("가상의 아이디로 로그인하거나 계정을 생성해주세요.")
 
         else: # firebase_config가 없거나 다른 문제
             if not firebase_config:
-                st.error("Firebase 설정이 올바르지 않습니다. 앱을 실행할 수 없습니다.")
+                st.error("Firebase 설정이 올바르지 않습니다. 앱을 실행할 수 없습니다. 'firebase_service_account.json' 파일을 확인하거나 Canvas 환경 설정을 확인해주세요.")
             st.session_state.user_id = "no_firebase_config"
 else: # Firebase Admin SDK가 설치되지 않은 경우
     st.session_state.firebase_initialized = False
     st.session_state.user_id = "firebase_not_available"
+    st.session_state.logged_in = False
+    st.session_state.current_username = None
 
 
 # --- Firestore 데이터 로드 및 저장 함수 ---
@@ -146,14 +162,15 @@ else: # Firebase Admin SDK가 설치되지 않은 경우
 def get_user_data_ref():
     """현재 사용자의 학습 데이터 Firestore 참조를 반환합니다."""
     # Firestore 보안 규칙에 따라 private data 경로 사용: /artifacts/{appId}/users/{userId}/{your_collection_name}
-    if st.session_state.get('db') and st.session_state.get('user_id') and st.session_state.get('app_id') and st.session_state.user_id != "loading_user":
+    if st.session_state.get('db') and st.session_state.get('user_id') and st.session_state.get('app_id') and st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
         return st.session_state.db.collection('artifacts').document(st.session_state.app_id).collection('users').document(st.session_state.user_id).collection('word_data').document('user_session')
-    return None # Firebase 초기화 안 된 경우
+    return None # Firebase 초기화 안 된 경우 또는 사용자 인증 안 된 경우
 
 def load_user_session_data():
     """Firestore에서 사용자의 학습 세션 데이터를 로드합니다."""
-    if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id == "loading_user":
-        st.warning("Firebase가 준비되지 않아 학습 데이터를 로드할 수 없습니다. 파일에서 단어를 불러옵니다.")
+    # Firebase가 준비되지 않았거나 사용자 인증이 안 된 경우 파일에서 로드
+    if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
+        st.warning("Firebase가 준비되지 않았거나 로그인되지 않아 학습 데이터를 로드할 수 없습니다. 파일에서 단어를 불러옵니다.")
         st.session_state.all_words = load_words_from_file(WORDS_FILE)
         st.session_state.available_words = list(st.session_state.all_words)
         st.session_state.used_words = []
@@ -201,9 +218,9 @@ def load_user_session_data():
 
 def save_user_session_data():
     """현재 사용자의 학습 세션 데이터를 Firestore에 저장합니다."""
-    if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id == "loading_user":
+    if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
         # st.warning("Firebase가 준비되지 않아 학습 데이터를 저장할 수 없습니다.")
-        return # Firebase가 준비되지 않았으면 저장하지 않음
+        return # Firebase가 준비되지 않았거나 사용자 인증 안 된 경우 저장하지 않음
 
     try:
         doc_ref = get_user_data_ref()
@@ -219,6 +236,94 @@ def save_user_session_data():
             st.warning("Firebase 데이터 참조를 얻을 수 없어 데이터를 저장할 수 없습니다.")
     except Exception as e:
         st.error(f"학습 데이터 저장 중 오류 발생: {e}")
+
+
+# --- 사용자 계정 관리 함수 (가상 ID 방식) ---
+
+def handle_custom_login_signup(username_input):
+    """
+    사용자 이름으로 로그인하거나 새로운 계정을 생성합니다.
+    이 방식은 비밀번호를 사용하지 않고, 사용자 이름을 Firebase UID에 매핑합니다.
+    """
+    if not st.session_state.get('firebase_initialized') or not FIREBASE_AVAILABLE:
+        st.error("Firebase가 초기화되지 않았습니다. 계정 기능을 사용할 수 없습니다.")
+        return
+
+    username_input = username_input.strip()
+    if not username_input:
+        st.error("사용자 이름을 입력해주세요.")
+        return
+
+    # 사용자 이름-UID 매핑 컬렉션 참조 (public 접근)
+    # Firestore 보안 규칙에서 이 컬렉션에 대한 읽기/쓰기 권한을 적절히 설정해야 합니다.
+    # 예: allow read: if true; allow create: if request.auth != null;
+    user_map_collection_ref = st.session_state.db.collection('artifacts').document(st.session_state.app_id).collection('public').document('username_to_uid_map').collection('mappings')
+
+    try:
+        # 1. 기존 사용자 이름으로 로그인 시도
+        query = user_map_collection_ref.where('username', '==', username_input).limit(1).get()
+        
+        if query: # 사용자 이름이 이미 존재
+            user_doc = query[0]
+            firebase_uid = user_doc.to_dict()['firebase_uid']
+            
+            # 해당 UID로 Custom Token 생성 및 로그인
+            custom_token = st.session_state.auth.create_custom_token(firebase_uid)
+            user = st.session_state.auth.sign_in_with_custom_token(custom_token)
+            
+            st.session_state.user_id = user.uid
+            st.session_state.logged_in = True
+            st.session_state.current_username = username_input
+            st.success(f"로그인 성공! 환영합니다, {username_input}님!")
+            load_user_session_data() # 로그인 후 사용자 데이터 로드
+            st.rerun()
+        else: # 새로운 사용자 이름
+            # 2. 새로운 계정 생성 (익명 Firebase 사용자 생성 후 매핑)
+            # 먼저 익명으로 로그인하여 Firebase UID를 얻습니다.
+            new_firebase_user = st.session_state.auth.sign_in_anonymously()
+            new_firebase_uid = new_firebase_user.uid
+
+            # 사용자 이름과 새 Firebase UID 매핑 저장
+            user_map_collection_ref.add({
+                'username': username_input,
+                'firebase_uid': new_firebase_uid
+            })
+            
+            # 현재 세션의 사용자 ID를 새로 생성된 UID로 설정
+            st.session_state.user_id = new_firebase_uid
+            st.session_state.logged_in = True
+            st.session_state.current_username = username_input
+            st.success(f"계정 생성 및 로그인 성공! 환영합니다, {username_input}님!")
+            # 새 계정이므로 데이터는 초기화 상태로 로드될 것임
+            load_user_session_data()
+            st.rerun()
+
+    except Exception as e:
+        st.error(f"로그인/계정 생성 중 오류 발생: {e}")
+        st.session_state.user_id = "error_during_auth"
+        st.session_state.logged_in = False
+        st.session_state.current_username = None
+
+def logout_user():
+    """현재 사용자를 로그아웃합니다."""
+    if not st.session_state.get('firebase_initialized') or not FIREBASE_AVAILABLE:
+        st.error("Firebase가 초기화되지 않았습니다. 로그아웃할 수 없습니다.")
+        return
+    
+    try:
+        st.session_state.auth.sign_out() # Firebase에서 로그아웃
+        st.session_state.user_id = "not_authenticated"
+        st.session_state.logged_in = False
+        st.session_state.current_username = None
+        st.success("로그아웃 되었습니다.")
+        # 세션 데이터 초기화 (새로운 익명 세션처럼 시작)
+        st.session_state.all_words = load_words_from_file(WORDS_FILE)
+        st.session_state.available_words = list(st.session_state.all_words)
+        st.session_state.used_words = []
+        st.session_state.correctly_answered_words_in_order = []
+        st.rerun()
+    except Exception as e:
+        st.error(f"로그아웃 중 오류 발생: {e}")
 
 
 # --- 기존 데이터 처리 함수들 ---
@@ -367,21 +472,20 @@ def load_new_word():
     st.session_state.last_hint = "" # 마지막 힌트 메시지 초기화
 
     # 새로운 단어를 로드할 때마다 Firestore에 현재 세션 데이터 저장
-    if FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
+    if st.session_state.get('logged_in') and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
         save_user_session_data()
 
 # --- Streamlit 앱 UI ---
 
 # 앱 초기 로딩 시 Firebase 초기화 및 사용자 데이터 로드
 if 'all_words' not in st.session_state:
-    # Firebase 초기화 및 인증은 이미 위에서 처리됨
-    # Canvas 환경에서 제공되는 app_id를 session_state에 저장
-    st.session_state.app_id = globals().get('__app_id', 'default-app-id')
+    st.session_state.app_id = globals().get('__app_id', 'default-app-id') # Canvas 환경에서 app_id를 session_state에 저장
 
-    if FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
-        load_user_session_data() # Firebase에서 데이터 로드
+    # Firebase가 준비되었고 로그인된 상태라면 사용자 데이터 로드
+    if st.session_state.get('logged_in') and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
+        load_user_session_data()
     else:
-        # Firebase 초기화 실패 시 또는 Firebase 사용 불가 시 기본 단어 로드
+        # Firebase가 준비되지 않았거나 로그인 안 된 경우 파일에서 단어 로드
         st.session_state.all_words = load_words_from_file(WORDS_FILE)
         st.session_state.available_words = list(st.session_state.all_words)
         st.session_state.used_words = []
@@ -394,84 +498,96 @@ if 'current_word' not in st.session_state:
 st.sidebar.title("메뉴")
 page = st.sidebar.radio("페이지 선택", ["퀴즈", "단어 목록"])
 
-# 사용자 ID 표시 (멀티 유저 앱 가이드라인 준수)
-if st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
-    st.sidebar.markdown(f"**사용자 ID:** `{st.session_state.user_id}`")
+# --- 사용자 계정 UI ---
+st.sidebar.subheader("사용자 계정")
+
+if not st.session_state.get('logged_in'):
+    username_input = st.sidebar.text_input("사용자 이름 입력", key="username_input")
+    if st.sidebar.button("로그인 / 계정 생성"):
+        handle_custom_login_signup(username_input)
 else:
-    st.sidebar.markdown(f"**사용자 ID:** `로딩 중...`")
+    st.sidebar.markdown(f"**환영합니다, {st.session_state.current_username}님!**")
+    st.sidebar.markdown(f"사용자 ID: `{st.session_state.user_id}`")
+    if st.sidebar.button("로그아웃"):
+        logout_user()
 
 
 if page == "퀴즈":
     st.title("🧠 스마트 영단어 퀴즈")
     st.caption("의미가 비슷하면 유사도 수치로 힌트를 드려요!")
 
-    st.subheader("힌트: 다음 뜻에 해당하는 영어 단어를 맞춰보세요.")
-    st.markdown(f"**영어 뜻:** `{st.session_state.first_def}`")
-    st.markdown(f"→ **한글 번역:** `{st.session_state.translated_def}`")
-
-    if not st.session_state.get('answered_correctly', False):
-        user_input = st.text_input("영어 단어를 입력하세요:", key=st.session_state.input_key)
-        
-        # 마지막 힌트가 있다면 표시
-        if st.session_state.last_hint:
-            st.info(st.session_state.last_hint)
-            st.session_state.last_hint = "" # 표시 후 초기화
-
-        if st.button("정답 확인"):
-            user_answer = user_input.strip().lower()
-            current_word_lower = st.session_state.current_word.lower()
-
-            if user_answer == current_word_lower:
-                st.session_state.answered_correctly = True
-                st.session_state.last_hint = "" # 정답 시 힌트 초기화
-                # 정답 맞춘 단어 목록에 추가 (중복 방지)
-                if current_word_lower not in st.session_state.correctly_answered_words_in_order:
-                    st.session_state.correctly_answered_words_in_order.append(current_word_lower)
-                
-                # 정답 시 Firestore에 데이터 저장
-                if FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id != "loading_user":
-                    save_user_session_data()
-                st.rerun()
-            else:
-                if user_answer: # 입력값이 있을 때만 유사도 계산
-                    embedding_user = model.encode(user_answer)
-                    
-                    max_similarity = 0
-                    
-                    # 정답 단어와의 유사도 계산
-                    sim_with_main_word = util.cos_sim(st.session_state.embeddings_for_similarity[0], embedding_user).item()
-                    max_similarity = sim_with_main_word
-
-                    # 힌트용 유의어들과의 유사도 계산 (가장 높은 유사도 선택)
-                    for i, syn_embedding in enumerate(st.session_state.embeddings_for_similarity[1:]):
-                        sim_with_syn = util.cos_sim(syn_embedding, embedding_user).item()
-                        if sim_with_syn > max_similarity:
-                            max_similarity = sim_with_syn
-                    
-                    if max_similarity >= HINT_THRESHOLD:
-                        st.session_state.last_hint = f"입력하신 단어의 의미가 정답 단어와 비슷해요! 😉 유사도: **{max_similarity:.2f}**"
-                        st.warning(st.session_state.last_hint) # 즉시 표시
-                    else:
-                        st.error(f"틀렸어요. 다시 시도해보세요. (유사도: {max_similarity:.2f})")
-                else:
-                    st.error("단어를 입력해주세요.")
-
+    if not st.session_state.get('logged_in'):
+        st.warning("로그인하거나 계정을 생성해야 퀴즈를 시작하고 학습 기록을 저장할 수 있습니다.")
     else:
-        st.success(f"정답입니다! 🎉 정답은 **{st.session_state.current_word}**였습니다.")
-        if st.button("다음 단어"):
-            load_new_word()
-            st.rerun()
+        st.subheader("힌트: 다음 뜻에 해당하는 영어 단어를 맞춰보세요.")
+        st.markdown(f"**영어 뜻:** `{st.session_state.first_def}`")
+        st.markdown(f"→ **한글 번역:** `{st.session_state.translated_def}`")
 
-    if st.button("정답 공개", key="reveal_answer"):
-        st.info(f"정답: **{st.session_state.current_word}**")
-        if st.session_state.synonyms_for_hints:
-            st.info(f"이 단어의 다른 유사 단어들 (힌트 목적으로 사용): `{', '.join(st.session_state.synonyms_for_hints)}`")
+        if not st.session_state.get('answered_correctly', False):
+            user_input = st.text_input("영어 단어를 입력하세요:", key=st.session_state.input_key)
+            
+            # 마지막 힌트가 있다면 표시
+            if st.session_state.last_hint:
+                st.info(st.session_state.last_hint)
+                st.session_state.last_hint = "" # 표시 후 초기화
+
+            if st.button("정답 확인"):
+                user_answer = user_input.strip().lower()
+                current_word_lower = st.session_state.current_word.lower()
+
+                if user_answer == current_word_lower:
+                    st.session_state.answered_correctly = True
+                    st.session_state.last_hint = "" # 정답 시 힌트 초기화
+                    # 정답 맞춘 단어 목록에 추가 (중복 방지)
+                    if current_word_lower not in st.session_state.correctly_answered_words_in_order:
+                        st.session_state.correctly_answered_words_in_order.append(current_word_lower)
+                    
+                    # 정답 시 Firestore에 데이터 저장
+                    if st.session_state.get('logged_in') and FIREBASE_AVAILABLE and st.session_state.get('firebase_initialized') and st.session_state.get('user_id') and st.session_state.user_id not in ["loading_user", "not_authenticated", "firebase_init_error", "anonymous_user_error", "no_firebase_config", "firebase_not_available"]:
+                        save_user_session_data()
+                    st.rerun()
+                else:
+                    if user_answer: # 입력값이 있을 때만 유사도 계산
+                        embedding_user = model.encode(user_answer)
+                        
+                        max_similarity = 0
+                        
+                        # 정답 단어와의 유사도 계산
+                        sim_with_main_word = util.cos_sim(st.session_state.embeddings_for_similarity[0], embedding_user).item()
+                        max_similarity = sim_with_main_word
+
+                        # 힌트용 유의어들과의 유사도 계산 (가장 높은 유사도 선택)
+                        for i, syn_embedding in enumerate(st.session_state.embeddings_for_similarity[1:]):
+                            sim_with_syn = util.cos_sim(syn_embedding, embedding_user).item()
+                            if sim_with_syn > max_similarity:
+                                max_similarity = sim_with_syn
+                        
+                        if max_similarity >= HINT_THRESHOLD:
+                            st.session_state.last_hint = f"입력하신 단어의 의미가 정답 단어와 비슷해요! 😉 유사도: **{max_similarity:.2f}**"
+                            st.warning(st.session_state.last_hint) # 즉시 표시
+                        else:
+                            st.error(f"틀렸어요. 다시 시도해보세요. (유사도: {max_similarity:.2f})")
+                    else:
+                        st.error("단어를 입력해주세요.")
+
+        else:
+            st.success(f"정답입니다! 🎉 정답은 **{st.session_state.current_word}**였습니다.")
+            if st.button("다음 단어"):
+                load_new_word()
+                st.rerun()
+
+        if st.button("정답 공개", key="reveal_answer"):
+            st.info(f"정답: **{st.session_state.current_word}**")
+            if st.session_state.synonyms_for_hints:
+                st.info(f"이 단어의 다른 유사 단어들 (힌트 목적으로 사용): `{', '.join(st.session_state.synonyms_for_hints)}`")
 
 elif page == "단어 목록":
     st.title("📚 단어 목록")
     st.markdown("앱에 로드된 모든 영단어 목록입니다.")
 
-    if st.session_state.all_words:
+    if not st.session_state.get('logged_in'):
+        st.warning("로그인하거나 계정을 생성해야 단어 목록을 볼 수 있습니다.")
+    elif st.session_state.all_words:
         st.subheader("정렬 옵션:")
         col_sort1, col_sort2, col_sort3 = st.columns(3)
         
