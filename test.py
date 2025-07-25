@@ -180,4 +180,102 @@ def load_user_session_data():
             else:
                 st.warning("이전 학습 데이터가 없습니다. 새로운 세션을 시작합니다.")
                 # 데이터가 없으면 파일에서 단어 로드 및 초기화
-                
+                st.session_state.all_words = load_words_from_file(WORDS_FILE)
+                st.session_state.available_words = list(st.session_state.all_words)
+                st.session_state.used_words = []
+                st.session_state.correctly_answered_words_in_order = []
+        else:
+            st.warning("Firebase 데이터 참조를 얻을 수 없습니다. 파일에서 단어를 불러옵니다.")
+            st.session_state.all_words = load_words_from_file(WORDS_FILE)
+            st.session_state.available_words = list(st.session_state.all_words)
+            st.session_state.used_words = []
+            st.session_state.correctly_answered_words_in_order = []
+
+    except Exception as e:
+        st.error(f"학습 데이터 로드 중 오류 발생: {e}")
+        # 오류 발생 시에도 파일에서 단어 로드 및 초기화
+        st.session_state.all_words = load_words_from_file(WORDS_FILE)
+        st.session_state.available_words = list(st.session_state.all_words)
+        st.session_state.used_words = []
+        st.session_state.correctly_answered_words_in_order = []
+
+def save_user_session_data():
+    """현재 사용자의 학습 세션 데이터를 Firestore에 저장합니다."""
+    if not FIREBASE_AVAILABLE or not st.session_state.get('firebase_initialized') or not st.session_state.get('user_id') or st.session_state.user_id == "loading_user":
+        # st.warning("Firebase가 준비되지 않아 학습 데이터를 저장할 수 없습니다.")
+        return # Firebase가 준비되지 않았으면 저장하지 않음
+
+    try:
+        doc_ref = get_user_data_ref()
+        if doc_ref:
+            data_to_save = {
+                'available_words': st.session_state.available_words,
+                'used_words': st.session_state.used_words,
+                'correctly_answered_words_in_order': st.session_state.correctly_answered_words_in_order
+            }
+            doc_ref.set(data_to_save)
+            # st.success("학습 데이터가 저장되었습니다.") # 너무 자주 표시될 수 있으므로 주석 처리
+        else:
+            st.warning("Firebase 데이터 참조를 얻을 수 없어 데이터를 저장할 수 없습니다.")
+    except Exception as e:
+        st.error(f"학습 데이터 저장 중 오류 발생: {e}")
+
+
+# --- 기존 데이터 처리 함수들 ---
+
+def load_words_from_file(filepath):
+    """
+    지정된 파일에서 영단어 목록을 불러옵니다.
+    각 줄의 공백을 제거하고 소문자로 변환합니다.
+    """
+    words = []
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                word = line.strip().lower() # 공백 제거 및 소문자 변환
+                if word: # 빈 줄이 아닌 경우에만 추가
+                    words.append(word)
+        if not words: # 파일은 있지만 단어가 없는 경우
+            st.warning(f"'{filepath}' 파일에 단어가 없습니다. 단어를 한 줄에 하나씩 입력해주세요.")
+            # 파일이 비어 있을 경우 기본 단어 목록을 제공 (개발/테스트용)
+            words = ["happy", "sad", "angry", "joyful", "unhappy", "glad", "mad", "furious", "beautiful", "intelligent", "courageous", "brave", "kind", "gentle", "strong", "weak", "fast", "slow", "bright", "dark"]
+    else:
+        st.error(f"'{filepath}' 파일을 찾을 수 없습니다. 파일을 생성하고 영단어를 한 줄에 하나씩 입력해주세요.")
+        # 파일이 없을 경우 기본 단어 목록을 제공 (개발/테스트용)
+        words = ["happy", "sad", "angry", "joyful", "unhappy", "glad", "mad", "furious", "beautiful", "intelligent", "courageous", "brave", "kind", "gentle", "strong", "weak", "fast", "slow", "bright", "dark"]
+    return words
+
+def get_word_data(word):
+    """단어의 첫 번째 뜻과 유의어 목록을 가져오는 함수"""
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+    definition, synonyms = None, []
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            for meaning in data[0].get('meanings', []):
+                if not definition and meaning.get('definitions'):
+                    definition = meaning['definitions'][0].get('definition')
+                synonyms.extend(s for s in meaning.get('synonyms', []) if s not in synonyms)
+    except requests.exceptions.RequestException as e:
+        st.error(f"API 요청 중 오류 발생: {e}")
+        return "API 요청 중 오류 발생", []
+    return definition, synonyms
+
+def translate_to_korean(text):
+    """Google Translate API를 사용하여 영어 텍스트를 한국어로 번역하는 함수"""
+    if not text: return "번역할 내용 없음"
+    url = "https://translation.googleapis.com/language/translate/v2"
+    params = {'q': text, 'source': 'en', 'target': 'ko', 'format': 'text', 'key': GOOGLE_API_KEY}
+    try:
+        res = requests.post(url, params=params)
+        if res.status_code == 200:
+            return res.json()['data']['translations'][0]['translatedText']
+        else:
+            st.error(f"번역 API 오류: {res.status_code} - {res.text}")
+            return "번역 실패"
+    except requests.exceptions.RequestException as e:
+        st.error(f"번역 API 요청 중 오류 발생: {e}")
+        return "번역 API 요청 중 오류 발생"
+
+def merge_so
