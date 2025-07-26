@@ -648,7 +648,7 @@ elif page == "단어 목록":
         with col_sort2:
             if st.button("단어 길이 순 정렬"):
                 st.session_state.current_sort_order = "length"
-                st.session_state.display("단어 길이 순 정렬")
+               
         with col_sort3:
             if st.button("퀴즈 맞춘 순 정렬"):
                 st.session_state.current_sort_order = "quiz_correct"
